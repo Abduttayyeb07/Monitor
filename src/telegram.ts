@@ -6,7 +6,18 @@ export interface TelegramNotifier {
     wallet: string;
     direction: "Sent" | "Received";
     amountZig: string;
+    amountUzig: string;
+    denom: string;
     txHash: string;
+    sender: string;
+    recipient: string;
+    contractAddress?: string | null;
+    action?: string | null;
+    offerAsset?: string | null;
+    askAsset?: string | null;
+    offerAmount?: string | null;
+    returnAmount?: string | null;
+    eventType?: string | null;
   }): Promise<void>;
 }
 
@@ -29,7 +40,18 @@ export class TelegramService implements TelegramNotifier {
     wallet: string;
     direction: "Sent" | "Received";
     amountZig: string;
+    amountUzig: string;
+    denom: string;
     txHash: string;
+    sender: string;
+    recipient: string;
+    contractAddress?: string | null;
+    action?: string | null;
+    offerAsset?: string | null;
+    askAsset?: string | null;
+    offerAmount?: string | null;
+    returnAmount?: string | null;
+    eventType?: string | null;
   }): Promise<void> {
     const destinationChatId = this.activeChatId;
     if (!destinationChatId) {
@@ -38,10 +60,23 @@ export class TelegramService implements TelegramNotifier {
     }
 
     const text = [
-      "\uD83D\uDEA8 Large Transfer Detected",
+      "Large Transfer Detected",
+      "",
       `Wallet: ${params.wallet}`,
       `Direction: ${params.direction}`,
-      `Amount: ${params.amountZig} ZIG`,
+      "",
+      `Sender: ${params.sender}`,
+      `Recipient: ${params.recipient}`,
+      `Contract (To): ${params.contractAddress || params.recipient}`,
+      "",
+      `Amount: ${params.amountZig} ZIG (${params.amountUzig} ${params.denom})`,
+      `Type: ${params.eventType || "wasm"}`,
+      `Action: ${params.action || "n/a"}`,
+      "",
+      `Ask Asset (Denom): ${params.askAsset || params.denom}`,
+      `Offer: ${params.offerAmount || "n/a"} ${params.offerAsset || "n/a"}`,
+      `Return: ${params.returnAmount || "n/a"}`,
+      "",
       `Tx: https://www.zigscan.org/tx/${params.txHash}`
     ].join("\n");
 

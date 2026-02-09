@@ -17,10 +17,21 @@ interface NormalizedTransfer {
   txhash: string;
 }
 
+interface TxContext {
+  eventType: string | null;
+  contractAddress: string | null;
+  action: string | null;
+  offerAsset: string | null;
+  askAsset: string | null;
+  offerAmount: string | null;
+  returnAmount: string | null;
+}
+
 export class TransferMonitor {
   private readonly seenTxHashes = new Set<string>();
   private readonly txOrder: string[] = [];
   private nonEventMessageCount = 0;
+  private readonly txContextCache = new Map<string, TxContext | null>();
 
   constructor(
     private readonly cfg: AppConfig,
@@ -58,6 +69,7 @@ export class TransferMonitor {
     }
 
     for (const [txHash, transfers] of txBuckets.entries()) {
+      const txContext = await this.getTxContext(txHash);
       for (const normalized of transfers) {
         const senderMatch = this.cfg.monitoredWallets.has(normalized.sender);
         const recipientMatch = this.cfg.monitoredWallets.has(normalized.recipient);
@@ -77,11 +89,11 @@ export class TransferMonitor {
         const amountZig = this.formatZigAmount(normalized.amountUzig);
 
         if (senderMatch) {
-          await this.sendAlert(normalized.sender, "Sent", amountZig, normalized.txhash);
+          await this.sendAlert(normalized, normalized.sender, "Sent", amountZig, txContext);
         }
 
         if (recipientMatch) {
-          await this.sendAlert(normalized.recipient, "Received", amountZig, normalized.txhash);
+          await this.sendAlert(normalized, normalized.recipient, "Received", amountZig, txContext);
         }
 
         console.log(
@@ -94,22 +106,151 @@ export class TransferMonitor {
   }
 
   private async sendAlert(
+    transfer: NormalizedTransfer,
     wallet: string,
     direction: "Sent" | "Received",
     amountZig: string,
-    txHash: string
+    txContext: TxContext | null
   ): Promise<void> {
     try {
       await this.notifier.sendLargeTransferAlert({
         wallet,
         direction,
         amountZig,
-        txHash
+        amountUzig: transfer.amountUzig.toString(),
+        denom: transfer.denom,
+        txHash: transfer.txhash,
+        sender: transfer.sender,
+        recipient: transfer.recipient,
+        eventType: txContext?.eventType || "wasm",
+        contractAddress: txContext?.contractAddress || transfer.recipient,
+        action: txContext?.action || null,
+        offerAsset: txContext?.offerAsset || null,
+        askAsset: txContext?.askAsset || null,
+        offerAmount: txContext?.offerAmount || null,
+        returnAmount: txContext?.returnAmount || null
       });
-      console.log(`[telegram] Alert sent for ${txHash} (${direction.toLowerCase()})`);
+      console.log(`[telegram] Alert sent for ${transfer.txhash} (${direction.toLowerCase()})`);
     } catch (err) {
       console.error("[telegram] Failed to send alert:", err);
     }
+  }
+
+  private async getTxContext(txHash: string): Promise<TxContext | null> {
+    if (this.txContextCache.has(txHash)) {
+      return this.txContextCache.get(txHash) || null;
+    }
+
+    const url = `${this.cfg.lcdUrl.replace(/\/+$/, "")}/cosmos/tx/v1beta1/txs/${txHash}`;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          signal: AbortSignal.timeout(8_000)
+        });
+        if (!response.ok) {
+          if (attempt === 3) {
+            console.warn(`[monitor] Failed to fetch tx context for ${txHash}: HTTP ${response.status}`);
+          }
+        } else {
+          const payload = (await response.json()) as unknown;
+          const context = this.extractTxContextFromLcd(payload);
+          if (context) {
+            this.txContextCache.set(txHash, context);
+            return context;
+          }
+        }
+      } catch (err) {
+        if (attempt === 3) {
+          console.warn(`[monitor] Failed to fetch tx context for ${txHash}:`, err);
+        }
+      }
+
+      if (attempt < 3) {
+        await this.sleep(1200);
+      }
+    }
+
+    return null;
+  }
+
+  private extractTxContextFromLcd(payload: unknown): TxContext | null {
+    const root = this.asRecord(payload);
+    if (!root) {
+      return null;
+    }
+
+    const txResponse = this.asRecord(root.tx_response);
+    const fromLogs = this.extractWasmContextFromLogs(txResponse?.logs);
+    if (fromLogs) {
+      return fromLogs;
+    }
+
+    return this.extractWasmContextFromEventArray(txResponse?.events);
+  }
+
+  private extractWasmContextFromLogs(logs: unknown): TxContext | null {
+    if (!Array.isArray(logs)) {
+      return null;
+    }
+
+    for (const logRaw of logs) {
+      const log = this.asRecord(logRaw);
+      if (!log || !Array.isArray(log.events)) {
+        continue;
+      }
+
+      const ctx = this.extractWasmContextFromEventArray(log.events);
+      if (ctx) {
+        return ctx;
+      }
+    }
+
+    return null;
+  }
+
+  private extractWasmContextFromEventArray(eventsRaw: unknown): TxContext | null {
+    if (!Array.isArray(eventsRaw)) {
+      return null;
+    }
+
+    for (const eventRaw of eventsRaw) {
+      const event = this.asRecord(eventRaw);
+      if (!event || String(event.type || "").toLowerCase() !== "wasm") {
+        continue;
+      }
+
+      const attrs = Array.isArray(event.attributes) ? event.attributes : [];
+      const values = new Map<string, string>();
+      for (const attrRaw of attrs) {
+        const attr = this.asRecord(attrRaw);
+        if (!attr) {
+          continue;
+        }
+
+        const key = String(attr.key || "").trim();
+        const value = String(attr.value || "").trim();
+        if (key && value) {
+          values.set(key, value);
+        }
+      }
+
+      return {
+        eventType: "wasm",
+        contractAddress: values.get("_contract_address") || null,
+        action: values.get("action") || null,
+        offerAsset: values.get("offer_asset") || null,
+        askAsset: values.get("ask_asset") || null,
+        offerAmount: values.get("offer_amount") || null,
+        returnAmount: values.get("return_amount") || null
+      };
+    }
+
+    return null;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private markSeen(txHash: string): void {

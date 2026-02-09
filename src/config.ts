@@ -4,6 +4,7 @@ dotenv.config();
 
 export interface AppConfig {
   wsUrl: string;
+  lcdUrl: string;
   telegramToken: string;
   telegramChatId: string | null;
   monitoredWallets: Set<string>;
@@ -19,6 +20,7 @@ const MONITORED_WALLETS = [
 ];
 
 const DEFAULT_WS_URL = "wss://zigchain-mainnet.zigscan.net/websocket";
+const DEFAULT_LCD_URL = "https://public-zigchain-lcd.numia.xyz";
 const ZIG_DECIMALS = 1_000_000n;
 
 function requireEnv(name: "TELEGRAM_BOT_TOKEN"): string {
@@ -62,6 +64,7 @@ const MIN_AMOUNT_UZIG = parseMinAmountZig() * ZIG_DECIMALS;
 
 export const config: AppConfig = {
   wsUrl: normalizeWsUrl(process.env.WS_URL || DEFAULT_WS_URL),
+  lcdUrl: process.env.LCD_URL?.trim() || DEFAULT_LCD_URL,
   telegramToken: requireEnv("TELEGRAM_BOT_TOKEN"),
   telegramChatId: optionalEnv("TELEGRAM_CHAT_ID"),
   monitoredWallets: new Set(MONITORED_WALLETS),
